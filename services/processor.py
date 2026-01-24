@@ -22,7 +22,7 @@ async def process_and_save_defect(ai_data):
         defect_doc = {
             "timestamp": datetime.utcnow(),
             "node_id": NODE_ID,
-            "defectcode": "d0", 
+            "defectcode": "d1", 
             "raw_image": ai_data["image_bytes"] # Luu truc tiep binary vao Mongo
         }
         

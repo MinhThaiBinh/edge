@@ -1,12 +1,16 @@
+# ================== NNPACK FIX ==================
 import os
+import sys
+os.environ["TORCH_NNPACK"] = "0"
+os.dup2(os.open(os.devnull, os.O_WRONLY), 2)
+# ===============================================
+
 import json
 import asyncio
 import paho.mqtt.client as mqtt
 from fastapi import FastAPI
 from services.camera_service import CameraSystem
 from services.processor import process_and_save_defect # Import logic xử lý mới
-
-os.environ["TORCH_NNPACK"] = "0"
 
 app = FastAPI()
 
@@ -60,4 +64,3 @@ async def startup():
 @app.on_event("shutdown")
 def shutdown():
     camera_sys.stop()
-    mqtt_client.loop_stop()

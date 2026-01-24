@@ -1,3 +1,10 @@
+# ================== NNPACK FIX ==================
+import os
+import sys
+os.environ["TORCH_NNPACK"] = "0"
+os.dup2(os.open(os.devnull, os.O_WRONLY), 2)
+# ===============================================
+
 import cv2
 import time
 import threading
