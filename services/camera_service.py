@@ -1,22 +1,18 @@
 import cv2
 import time
-import os
 import threading
-import gc
 from datetime import datetime
 from ultralytics import YOLO
 
 class CameraSystem:
-    def __init__(self, url, model_path, save_dir):
+    def __init__(self, url, model_path):
         print(f"--- Đang nạp Model YOLO từ: {model_path} ---")
         self.model = YOLO(model_path)
         self.cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
         self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        self.save_dir = save_dir
         self.latest_frame = None
         self.lock = threading.Lock()
         self.running = True
-        self.stt = 1
 
         self.reader_thread = threading.Thread(target=self._camera_reader, daemon=True)
         self.reader_thread.start()
@@ -32,27 +28,26 @@ class CameraSystem:
     def capture_and_detect(self):
         with self.lock:
             if self.latest_frame is None:
-                return {"error": "No frame"}
+                return None
             frame = self.latest_frame.copy()
 
-        # Inference
+        # 1. AI Inference
         results = self.model.predict(source=frame, imgsz=640, conf=0.25, verbose=False)
+        count = len(results[0].boxes)
         
-        # Tạo tên file lưu ảnh
-        now = datetime.now().strftime("%H_%M_%S")
-        filename = f"{now}_{self.stt}.jpg"
-        os.makedirs(self.save_dir, exist_ok=True)
+        # 2. Vẽ kết quả lên ảnh
+        annotated_frame = results[0].plot()
+
+        # 3. Encode ảnh sang dạng Binary (JPEG) thay vì lưu ổ cứng
+        # success: True/False, buffer: mảng byte ảnh
+        success, buffer = cv2.imencode(".jpg", annotated_frame)
         
-        # Vẽ bounding box và lưu
-        annotated = results[0].plot()
-        cv2.imwrite(os.path.join(self.save_dir, filename), annotated)
-        
-        self.stt += 1
-        return {
-            "time": now,
-            "count": len(results[0].boxes),
-            "file": filename
-        }
+        if success:
+            return {
+                "count": count,
+                "image_bytes": buffer.tobytes() # Chuyển sang bytes cho MongoDB
+            }
+        return None
 
     def stop(self):
         self.running = False
