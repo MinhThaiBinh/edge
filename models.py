@@ -48,14 +48,13 @@ class WorkingParameterMaster(BaseModel):
 
 # --- BẢNG TỰ SINH (IoT & Production) ---
 class IoTRecord(BaseModel):
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
-    node_id: str
+    CounterTimestamp: datetime = Field(default_factory=datetime.utcnow)
+    MachineId: str
     raw_value: int
-    msg_payload: dict # Lưu lại nội dung gốc từ MQTT
 
 class DefectRecord(BaseModel):
     timestamp: datetime = Field(default_factory=datetime.utcnow)
-    node_id: str
+    MachineId: str
     defectcode: str
     raw_image: bytes
     

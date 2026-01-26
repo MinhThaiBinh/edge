@@ -12,3 +12,31 @@ def get_database():
 
 def get_production_db():
     return db_production
+
+async def ensure_timeseries():
+    """
+    Khởi tạo các bảng Time-series nếu chưa tồn tại
+    """
+    existing_collections = await db_production.list_collection_names()
+    
+    if "iot_records" not in existing_collections:
+        print(">>> Đang tạo bảng timeseries 'iot_records'...")
+        await db_production.create_collection(
+            "iot_records",
+            timeseries={
+                "timeField": "timestamp",
+                "metaField": "node_id",
+                "granularity": "seconds"
+            }
+        )
+    
+    if "production_records" not in existing_collections:
+        print(">>> Đang tạo bảng timeseries 'production_records'...")
+        await db_production.create_collection(
+            "production_records",
+            timeseries={
+                "timeField": "timestamp",
+                "metaField": "machine_id",
+                "granularity": "minutes"
+            }
+        )

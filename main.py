@@ -12,6 +12,7 @@ from fastapi import FastAPI
 from services.camera_service import CameraSystem
 from services.processor import process_and_save_defect # Import logic xử lý mới
 
+from database import ensure_timeseries
 app = FastAPI()
 
 # --- CẤU HÌNH ---
@@ -50,6 +51,7 @@ mqtt_client.on_message = on_message
 
 @app.on_event("startup")
 async def startup():
+    await ensure_timeseries()
     global loop
     loop = asyncio.get_running_loop() # Lấy loop hiện tại của FastAPI
     
