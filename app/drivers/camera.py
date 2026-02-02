@@ -1,14 +1,7 @@
-# ================== NNPACK FIX ==================
 import os
-import sys
-os.environ["TORCH_NNPACK"] = "0"
-# os.dup2(os.open(os.devnull, os.O_WRONLY), 2)
-# ===============================================
-
 import cv2
 import time
 import threading
-from datetime import datetime
 from ultralytics import YOLO
 
 class CameraSystem:
@@ -45,14 +38,13 @@ class CameraSystem:
         # 2. Vẽ kết quả lên ảnh
         annotated_frame = results[0].plot()
 
-        # 3. Encode ảnh sang dạng Binary (JPEG) thay vì lưu ổ cứng
-        # success: True/False, buffer: mảng byte ảnh
+        # 3. Encode ảnh sang dạng Binary (JPEG)
         success, buffer = cv2.imencode(".jpg", annotated_frame)
         
         if success:
             return {
                 "count": count,
-                "image_bytes": buffer.tobytes() # Chuyển sang bytes cho MongoDB
+                "image_bytes": buffer.tobytes()
             }
         return None
 

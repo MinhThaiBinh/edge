@@ -1,45 +1,79 @@
-# Production Record Management System
+# Edge AIoT - Production Record Management System
 
-Hệ thống quản lý bản ghi sản xuất (Production Record) tự động tính toán hiệu suất (OEE), theo dõi sản lượng và lỗi trong thời gian thực tại Edge.
+Hệ thống Backend chuyên dụng cho Edge AIoT, tự động quản lý bản ghi sản xuất (Production Record), tính toán chỉ số OEE, theo dõi sản lượng và phát hiện lỗi bằng AI Camera trong thời gian thực.
 
-## 1. Quy tắc sinh mã (Record ID)
-Mỗi bản ghi được định danh duy nhất theo cấu trúc:
+## 1. Cấu trúc Dự án (Edge Refactored)
+
+Hệ thống được thiết kế theo cấu trúc Modular chuyên biệt cho Edge Backend:
+
+```text
+fast_api_edge/
+├── app/
+│   ├── main.py            # Entry point: Quản lý Lifecycle & Startup Workers
+│   ├── config.py          # Cấu hình tập trung (MQTT, Camera, DB, Thresholds)
+│   ├── drivers/           # Tầng thiết bị (Hardware: Camera AI, MQTT Clients)
+│   ├── engine/            # Bộ não xử lý (Signal Processing & OEE Logic)
+│   ├── storage/           # Lưu trữ (MongoDB Connection & Schemas)
+│   └── tasks/             # Các tác vụ chạy ngầm (Shift Monitor)
+├── run.py                 # Script khởi động nhanh hệ thống
+├── weights/               # Chứa các Model YOLO (.pt)
+└── .gitignore             # Cấu hình bỏ qua các file rác và model nặng
+```
+
+## 2. Quy tắc sinh mã (Record ID)
+
+Mỗi lượt sản xuất trên một máy được định danh duy nhất (Unique ID):
 `{Mã_Sản_Phẩm}-{Ngày}-{Tháng}-{Năm}-{Mã_Máy}-{STT}`
 
-*   **Ví dụ:** `pd001-02-02-2026-MC01-1`
-*   **STT:** Tự động tăng nếu trong cùng một ngày, trên cùng một máy có nhiều lượt sản xuất cùng một mã hàng (VD: sau khi đổi mã hàng rồi quay lại mã cũ).
+*   **Ví dụ:** `pd001-02-02-2026-m002-1`
+*   **STT:** Tự động tăng nếu trong ngày có nhiều lượt sản xuất cùng một mã hàng trên cùng một máy (sau khi Changeover).
 
-## 2. Vòng đời và Trạng thái (Status)
-Bản ghi có hai trạng thái chính:
+## 3. Quy trình Xử lý Dữ liệu
 
-### `running` (Đang hoạt động)
-*   **Khởi tạo:** Khi bắt đầu ca làm việc hoặc ngay sau khi có sự kiện đổi mã hàng (Changeover).
-*   **Mục đích:** Đánh dấu mốc thời gian bắt đầu (`createtime`) để hệ thống biết phạm vi thu thập dữ liệu IoT.
-*   **Dữ liệu:** Các chỉ số sản lượng và OEE lúc này bằng 0.
+### Trạng thái `running` (Đang hoạt động)
+*   **Khởi tạo:** Khi bắt đầu ca hoặc ngay khi HMI gửi tín hiệu Changeover.
+*   **Nhiệm vụ:** Đánh dấu mốc thời gian `createtime` để hệ thống lọc dữ liệu IoT và Defect tương ứng.
 
-### `closed` (Đã đóng)
-*   **Kích hoạt:** Khi nhận tín hiệu Changeover từ HMI (mã hàng cũ bị thay thế bởi mã mới).
-*   **Hành động hệ thống:**
-    1.  Tìm bản ghi đang `running` của máy đó.
-    2.  Tổng hợp `total_count` từ cảm biến (IoT records).
-    3.  Tổng hợp `defect_count` từ AI Camera và HMI.
-    4.  Truy vấn `idealcyclesec` từ bảng `workingparameter`.
-    5.  Tính toán các chỉ số OEE (Availability, Performance, Quality).
-    6.  Cập nhật trạng thái thành `closed`.
+### Trạng thái `closed` (Đã đóng)
+*   **Kích hoạt:** Khi mã hàng cũ bị thay thế bởi mã hàng mới.
+*   **Hành động hệ thống khi chốt bản ghi:**
+    1. Tổng hợp `total_count` từ cảm biến (IoT records).
+    2. Tổng hợp `defect_count` từ AI Camera và ghi nhận từ HMI.
+    3. Truy vấn `idealcyclesec` từ bảng Master `workingparameter`.
+    4. Tính toán **OEE** bao gồm:
+        - **Availability (A):** Tỷ lệ thời gian chạy.
+        - **Performance (P):** Hiệu suất theo chu kỳ lý tưởng.
+        - **Quality (Q):** Tỷ lệ sản phẩm đạt chất lượng.
+    5. Cập nhật `status = "closed"`.
 
-## 3. Quản lý Ca làm việc (Shift)
-Hệ thống tự động nhận diện ca dựa trên giờ hệ thống và dữ liệu trong bảng `shift`:
-*   **Đơn vị:** Thời gian bắt đầu/kết thúc ca lưu bằng **giây** tính từ 00:00 (VD: 7h sáng = 25200s).
-*   **Xử lý ca đêm:** Hệ thống tự động nhận diện nếu ca kéo dài qua ngày hôm sau (VD: 22h - 06h).
-*   **Thông tin lưu trữ:** Mỗi bản ghi sẽ chứa `shiftcode`, `startshift` và `endshift` tương ứng tại thời điểm phát sinh.
+## 4. Quản lý Ca và Giờ nghỉ (Shift & Break)
 
-## 4. Master Data phụ thuộc
-Để Production Record hoạt động chính xác, các bảng sau cần có dữ liệu:
-*   `shift`: Chứa cấu hình thời gian các ca.
-*   `workingparameter`: Chứa `idealcyclesec` (giây/sản phẩm) của từng mã hàng.
-*   `product`: Chứa thông tin mã hàng và sản lượng dự kiến (`plannedqty`).
+Hệ thống tự động đồng bộ theo thời gian thực:
+*   **Nhận diện ca:** Tự động dựa trên giờ Server (đã hỗ trợ cả ca ngày và ca đêm vắt ngày).
+*   **Giờ nghỉ (Break Time):** Tự động nạp thông tin `breakstart` và `breakend` từ Master Data vào bản ghi sản xuất để phục vụ tính toán thời gian chạy thực tế (Net Run Time) trong tương lai.
 
-## 5. Luồng xử lý kỹ thuật (Logic.py)
-1.  **Chốt bản ghi:** `create_production_record_on_changeover` thực hiện "Flush" dữ liệu từ memory/logs xuống DB và đóng record.
-2.  **Mở bản ghi:** `initialize_production_record` chuẩn bị vùng chứa dữ liệu cho lượt sản xuất tiếp theo.
-3.  **Nhận diện ca:** `get_current_shift` trả về thông tin ca hiện tại theo thời gian thực.
+## 5. Hướng dẫn sử dụng
+
+### Cài đặt môi trường
+1. Tạo môi trường ảo: `python3 -m venv venv`
+2. Kích hoạt: `source venv/bin/activate`
+3. Cài đặt thư viện: `pip install -r requirements.txt`
+
+### Cấu hình
+Mọi thông số kỹ thuật được quản lý tại `app/config.py`:
+- `RTSP_URL`: Địa chỉ luồng Camera.
+- `MQTT_HOST`: Địa chỉ Broker (Counter, HMI).
+- `MONGODB_URL`: Kết nối cơ sở dữ liệu.
+- `THRESHOLD`: Ngưỡng AI để xác định hàng lỗi.
+
+### Khởi động hệ thống
+Để khởi động hệ thống với chế độ tự động tải lại (Reload):
+```bash
+python3 run.py
+```
+
+## 6. Thành phần Master Data cần thiết
+Để hệ thống vận hành chính xác, Database `masterdata` cần đảm bảo:
+*   **shift**: Chứa `shiftcode`, `shiftstarttime`, `shiftendtime`, `breaktime`.
+*   **workingparameter**: Chứa `productcode` và `idealcyclesec`.
+*   **product**: Chứa `productcode` và `plannedqty`.
