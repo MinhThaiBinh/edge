@@ -2,7 +2,7 @@
 import os
 import sys
 os.environ["TORCH_NNPACK"] = "0"
-os.dup2(os.open(os.devnull, os.O_WRONLY), 2)
+# os.dup2(os.open(os.devnull, os.O_WRONLY), 2)
 # ===============================================
 
 import cv2
@@ -13,7 +13,7 @@ from ultralytics import YOLO
 
 class CameraSystem:
     def __init__(self, url, model_path):
-        print(f"--- Đang nạp Model YOLO từ: {model_path} ---")
+        print(f"--- Đang nạp Model YOLO từ: {model_path} ---", flush=True)
         self.model = YOLO(model_path)
         self.cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
         self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
