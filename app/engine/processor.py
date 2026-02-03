@@ -1,4 +1,5 @@
 from datetime import datetime
+from bson import ObjectId
 from app.storage.db import db_production, get_database
 from app.storage.schemas import IoTRecord
 from app.engine.logic import (
@@ -158,34 +159,40 @@ async def process_hmi_downtime_reason(data):
         return False
         
     try:
-        machinecode = data.get("device")
-        downtime_code = data.get("downtimecode")
+        # Nếu là msg do chính hệ thống phản hồi (có status), bỏ qua để tránh vòng lặp
+        if "status" in data:
+            return False
+
+        record_id_str = data.get("id")
+        machinecode = (data.get("machine") or data.get("device") or "").strip()
+        downtime_code = (data.get("downtimecode") or "").strip()
         
-        # 1. Kiểm tra tính hợp lệ của downtime_code trong Master Data
+        if not record_id_str:
+            print(">>> [DOWNTIME] Từ chối msg: Thiếu ID bản ghi")
+            return False
+
+        # 1. Kiểm tra tính hợp lệ của downtime_code trong Master Data (Case-insensitive)
         db_master = get_database()
-        master_entry = await db_master["downtimemaster"].find_one({"downtimecode": downtime_code})
+        master_entry = await db_master["downtime"].find_one({
+            "downtimecode": {"$regex": f"^{downtime_code}$", "$options": "i"}
+        })
         
         if not master_entry:
-            print(f">>> [DOWNTIME] Từ chối msg: Mã lỗi {downtime_code} không tồn tại trong Downtime Master")
+            print(f">>> [DOWNTIME ERROR] Mã lỗi '{downtime_code}' không tồn tại trong danh mục 'downtime'")
             return False
             
-        # Ưu tiên lấy reason từ Master Data nếu message không có reason chi tiết
-        reason = data.get("reason") or master_entry.get("downtimename", "Unknown Reason")
+        # Sử dụng đúng mã lỗi từ Master Data thay vì mã user gửi lên
+        downtime_code = master_entry.get("downtimecode", downtime_code)
+            
+        reason = master_entry.get("downtimename", "Unknown Reason")
         
         db = db_production
-        # Tìm bản ghi downtime active gần nhất hoặc vừa mới đóng
-        # Ưu tiên bản ghi đang active
-        target = await db.downtime_records.find_one(
-            {"machinecode": machinecode, "status": "active"},
-            sort=[("start_time", -1)]
-        )
-        
-        # Nếu không có active, tìm bản ghi vừa đóng (trong vòng 10p qua)
-        if not target:
-            target = await db.downtime_records.find_one(
-                {"machinecode": machinecode, "status": "closed"},
-                sort=[("end_time", -1)]
-            )
+        # 2. Tìm bản ghi downtime bằng ID
+        try:
+            target = await db.downtime_records.find_one({"_id": ObjectId(record_id_str)})
+        except:
+            print(f">>> [DOWNTIME] ID không hợp lệ: {record_id_str}")
+            return False
             
         if target:
             await db.downtime_records.update_one(
@@ -195,23 +202,23 @@ async def process_hmi_downtime_reason(data):
                     "reason": reason
                 }}
             )
-            print(f">>> [DOWNTIME] Đã cập nhật lý do cho {machinecode}: {downtime_code} - {reason}")
+            print(f">>> [DOWNTIME] Đã cập nhật cho ID {record_id_str}: {downtime_code} - {reason}")
             
-            # --- NEW: Gửi thông báo MQTT sau khi cập nhật lý do ---
+            # --- Gửi thông báo MQTT sau khi cập nhật ---
             mqtt_publish("topic/downtimeinput", {
                 "id": str(target["_id"]),
-                "machine": machinecode,
+                "machine": machinecode or target.get("machinecode"),
                 "status": target.get("status", "unknown"),
                 "downtimecode": downtime_code,
                 "createtime": target.get("start_time"),
-                "endtime": target.get("end_time", "None")
+                "endtime": target.get("end_time") if target.get("end_time") else "None"
             })
             
             # Sau khi cập nhật downtime, update lại production kpi
-            await update_current_production_stats(machinecode)
+            await update_current_production_stats(machinecode or target.get("machinecode"))
             return True
         else:
-            print(f">>> [DOWNTIME] Không tìm thấy bản ghi downtime để cập nhật cho {machinecode}")
+            print(f">>> [DOWNTIME] Không tìm thấy bản ghi ID {record_id_str}")
             return False
             
     except Exception as e:

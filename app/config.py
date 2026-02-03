@@ -5,7 +5,7 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODEL_PATH = "/home/cminh/aiot/pill_detection/weights/best.pt"
 
 # --- NETWORK ---
-RTSP_URL = "rtsp://admin:IJMCYI@192.168.1.80:554/ch1/main"
+RTSP_URL = "rtsp://admin:IJMCYI@192.168.1.72:554/ch1/main"
 MQTT_HOST = "192.168.1.77" 
 MQTT_PORT = 1883
 MQTT_USER = "congminh_broker"

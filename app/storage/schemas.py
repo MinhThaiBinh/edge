@@ -87,6 +87,7 @@ class ProductionRecord(BaseModel):
     productcode: str #lấy từ iot counter
     shiftcode: str #lấy từ bảng shift
     status: str = "running" # running hoặc closed
+    machinestatus: str = "running" # running hoặc stopped (Trạng thái thực tế máy)
     is_synced: bool = False
 
     # Time info
@@ -115,6 +116,6 @@ class DowntimeRecord(BaseModel):
     start_time: datetime = Field(default_factory=datetime.utcnow)
     end_time: Optional[datetime] = None
     duration_seconds: int = 0
-    downtime_code: Optional[str] = "D0" # Mặc định là lỗi chưa xác định
+    downtime_code: Optional[str] = "default" # Mặc định là lỗi chưa xác định
     reason: Optional[str] = ""
     status: str = "active" # active hoặc closed
