@@ -50,6 +50,14 @@ class BaseMQTTService:
         self.client.loop_stop()
         self.client.disconnect()
 
+    def publish(self, topic, data):
+        try:
+            payload = json.dumps(data, default=str)
+            self.client.publish(topic, payload, qos=1)
+            print(f">>> [{self.prefix}] Published to {topic}")
+        except Exception as e:
+            print(f"[{self.prefix}] Lỗi publish: {e}")
+
 class CounterService(BaseMQTTService):
     def __init__(self, host, port, user, pw):
         super().__init__(host, port, "topic/sensor/counter", user, pw, "MQTT COUNTER")
@@ -60,4 +68,8 @@ class HMIDefectService(BaseMQTTService):
 
 class HMIChangeoverService(BaseMQTTService):
     def __init__(self, host, port, user, pw):
-        super().__init__(host, port, "topic/changover/hmi", user, pw, "MQTT CHANGEOVER")
+        super().__init__(host, port, "topic/changeover/hmi", user, pw, "MQTT CHANGEOVER")
+
+class HMIDowntimeService(BaseMQTTService):
+    def __init__(self, host, port, user, pw):
+        super().__init__(host, port, "topic/downtimeinput", user, pw, "MQTT DOWNTIME")

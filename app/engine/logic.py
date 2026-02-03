@@ -1,8 +1,34 @@
-from app.storage.schemas import ProductionRecord
+from app.storage.schemas import ProductionRecord, DowntimeRecord
 from app.storage.db import get_production_db, get_database
 from datetime import datetime, timedelta
 from typing import Optional
 import sys
+from app.utils.messaging import mqtt_publish
+
+async def finalize_production_record_on_shift_change(machinecode: str, old_shift_info: dict, timestamp: datetime):
+    """Chốt bản ghi khi hết ca và chuẩn bị cho ca mới."""
+    try:
+        db = get_production_db()
+        # Tìm record đang chạy của máy
+        existing_record = await db.production_records.find_one(
+            {"machinecode": machinecode, "status": "running"},
+            sort=[("createtime", -1)]
+        )
+        
+        if existing_record:
+            # Dùng lại logic changeover nhưng với dữ liệu ca cũ
+            # Để đơn giản, ta gọi create_production_record_on_changeover 
+            # nhưng giữ nguyên productcode
+            p_code = existing_record.get("productcode")
+            print(f">>> [SHIFT] Đang chốt bản ghi ca cũ cho máy {machinecode}")
+            await create_production_record_on_changeover(
+                machinecode=machinecode,
+                old_productcode=p_code,
+                new_productcode=p_code, # Không đổi sản phẩm, chỉ đổi ca
+                changeover_timestamp=timestamp
+            )
+    except Exception as e:
+        print(f">>> [SHIFT ERROR] Lỗi finalize_production_record_on_shift_change: {e}")
 
 async def create_production_record_on_changeover(
     machinecode: str,
@@ -38,7 +64,7 @@ async def create_production_record_on_changeover(
                 "machinecode": machinecode,
                 "timestamp": {"$gte": start_time, "$lt": changeover_timestamp}
             }},
-            {"$group": {"_id": None, "total_count": {"$sum": "$raw_value"}}}
+            {"$group": {"_id": None, "total_count": {"$sum": 1}}}
         ]
         iot_result = await db.iot_records.aggregate(iot_pipeline).to_list(1)
         total_count = iot_result[0]["total_count"] if iot_result else 0
@@ -85,24 +111,28 @@ async def create_production_record_on_changeover(
             id=target_id,
             machinecode=machinecode,
             productcode=actual_productcode,
-            idealcyclesec=idealcyclesec,
             shiftcode=shift_info["shiftcode"],
             startshift=shift_info["startshift"],
             endshift=shift_info["endshift"],
             breakstart=shift_info["breakstart"],
             breakend=shift_info["breakend"],
-            plannedqty=plannedqty,
-            run_seconds=run_seconds,
-            downtime_seconds=downtime_seconds,
-            avg_cycle=round(avg_cycle, 2),
-            total_count=total_count,
-            defect_count=defect_count,
-            availability=round(availability, 4),
-            performance=round(performance, 4),
-            quality=round(quality, 4),
-            oee=round(oee, 4),
+            status="closed",
             is_synced=False,
-            status="closed"
+            kpis={
+                "availability": round(availability, 4),
+                "performance": round(performance, 4),
+                "quality": round(quality, 4),
+                "oee": round(oee, 4)
+            },
+            stats={
+                "total_count": total_count,
+                "defect_count": defect_count,
+                "avg_cycle": round(avg_cycle, 2),
+                "run_seconds": run_seconds,
+                "downtime_seconds": downtime_seconds,
+                "idealcyclesec": idealcyclesec,
+                "plannedqty": plannedqty
+            }
         )
         
         await db.production_records.replace_one(
@@ -110,7 +140,7 @@ async def create_production_record_on_changeover(
             record.model_dump(by_alias=True, exclude_none=True),
             upsert=True
         )
-        print(f">>> [LOGIC] Đã ngắt (Finalized) ProductionRecord: {target_id} (OEE={record.oee})")
+        print(f">>> [LOGIC] Đã ngắt (Finalized) ProductionRecord: {target_id} (OEE={record.kpis.oee})")
         return record
     except Exception as e:
         print(f">>> [LOGIC ERROR] Lỗi trong create_production_record_on_changeover: {e}")
@@ -209,15 +239,17 @@ async def initialize_production_record(machinecode: str, productcode: str):
             id=record_id,
             machinecode=machinecode,
             productcode=productcode,
-            idealcyclesec=idealcyclesec,
             shiftcode=shift_info["shiftcode"],
             startshift=shift_info["startshift"],
             endshift=shift_info["endshift"],
             breakstart=shift_info["breakstart"],
             breakend=shift_info["breakend"],
-            plannedqty=plannedqty,
-            run_seconds=0, downtime_seconds=0, avg_cycle=0, total_count=0, defect_count=0,
-            availability=0, performance=0, quality=0, oee=0, is_synced=False, status="running"
+            status="running",
+            is_synced=False,
+            stats={
+                "idealcyclesec": idealcyclesec,
+                "plannedqty": plannedqty
+            }
         )
         
         await db.production_records.insert_one(record.model_dump(by_alias=True, exclude_none=True))
@@ -226,3 +258,211 @@ async def initialize_production_record(machinecode: str, productcode: str):
     except Exception as e:
         print(f">>> [LOGIC ERROR] Lỗi trong initialize_production_record: {e}")
         return None
+async def update_current_production_stats(machinecode: str):
+    """Cập nhật real-time stats và kpis cho ProductionRecord đang chạy."""
+    try:
+        db = get_production_db()
+        now = datetime.utcnow()
+        
+        # 1. Lấy record đang active
+        record_doc = await db.production_records.find_one(
+            {"machinecode": machinecode, "status": "running"},
+            sort=[("createtime", -1)]
+        )
+        if not record_doc:
+            print(f">>> [DEBUG ERROR] Không tìm thấy bản ghi 'running' cho máy: '{machinecode}'")
+            return
+            
+        start_time = record_doc["createtime"]
+        record_id = record_doc["_id"]
+        print(f">>> [DEBUG] Đang cập nhật cho {record_id}. Start time: {start_time}")
+        
+        # 2. Tính tổng sản lượng (total_count)
+        iot_pipeline = [
+            {"$match": {
+                "machinecode": machinecode,
+                "timestamp": {"$gte": start_time, "$lte": now}
+            }},
+            {"$group": {"_id": None, "total_count": {"$sum": 1}}}
+        ]
+        iot_result = await db.iot_records.aggregate(iot_pipeline).to_list(1)
+        total_count = iot_result[0]["total_count"] if iot_result else 0
+        print(f">>> [DEBUG] Stats for {machinecode}: found {total_count} IoT records since {start_time}")
+        
+        # 3. Tính số lượng lỗi (defect_count)
+        defect_pipeline = [
+            {"$match": {
+                "machinecode": machinecode,
+                "timestamp": {"$gte": start_time, "$lte": now}
+            }},
+            {"$group": {"_id": None, "defect_count": {"$sum": 1}}}
+        ]
+        defect_result = await db.defect_records.aggregate(defect_pipeline).to_list(1)
+        defect_count = defect_result[0]["defect_count"] if defect_result else 0
+        print(f">>> [DEBUG] Stats for {machinecode}: found {defect_count} Defect records since {start_time}")
+        
+        # 4. Tính toán thời gian và OEE
+        run_seconds = int((now - start_time).total_seconds())
+        # Lấy các tham số từ stats hiện tại hoặc mặc định
+        current_stats = record_doc.get("stats", {})
+        idealcyclesec = current_stats.get("idealcyclesec", 1.0)
+        plannedqty = current_stats.get("plannedqty", 0)
+        
+        # --- NEW: Tính toán Downtime thực tế ---
+        # Lấy tổng downtime từ bảng downtime_records cho bản ghi này
+        downtime_pipeline = [
+            {"$match": {
+                "machinecode": machinecode,
+                "start_time": {"$gte": start_time}
+            }},
+            {"$group": {"_id": None, "total_downtime": {"$sum": "$duration_seconds"}}}
+        ]
+        downtime_result = await db.downtime_records.aggregate(downtime_pipeline).to_list(1)
+        downtime_seconds = downtime_result[0]["total_downtime"] if downtime_result else 0
+        
+        # Nếu đang có downtime active, tính thêm thời gian trôi qua từ lúc start downtime đến hiện tại
+        active_dt = await db.downtime_records.find_one({"machinecode": machinecode, "status": "active"})
+        if active_dt:
+            current_dt_seconds = int((now - active_dt["start_time"]).total_seconds())
+            downtime_seconds += max(0, current_dt_seconds)
+
+        if total_count > 0:
+            # Thời gian hoạt động thực tế = Tổng thời gian - Downtime
+            actual_run_seconds = max(0, run_seconds - downtime_seconds)
+            
+            total_seconds = run_seconds # Hoặc dùng run_seconds làm base
+            availability = actual_run_seconds / run_seconds if run_seconds > 0 else 0.0
+            
+            ideal_total_time = idealcyclesec * total_count
+            performance = ideal_total_time / actual_run_seconds if actual_run_seconds > 0 else 0.0
+            quality = (total_count - defect_count) / total_count
+            oee = availability * performance * quality
+            avg_cycle = actual_run_seconds / total_count
+        else:
+            availability = performance = quality = oee = avg_cycle = 0.0
+
+        # 5. Cập nhật vào DB
+        update_data = {
+            "$set": {
+                "kpis": {
+                    "availability": round(availability, 4),
+                    "performance": round(performance, 4),
+                    "quality": round(quality, 4),
+                    "oee": round(oee, 4)
+                },
+                "stats": {
+                    "total_count": total_count,
+                    "defect_count": defect_count,
+                    "avg_cycle": round(avg_cycle, 2),
+                    "run_seconds": run_seconds, # Tổng thời gian kể từ đầu ca
+                    "actual_run_seconds": actual_run_seconds if total_count > 0 else 0,
+                    "downtime_seconds": downtime_seconds,
+                    "idealcyclesec": idealcyclesec,
+                    "plannedqty": plannedqty
+                }
+            }
+        }
+        
+        res = await db.production_records.update_one({"_id": record_id}, update_data)
+        if res.modified_count > 0:
+            print(f">>> [LOGIC] Đã cập nhật thành công {machinecode}: Total={total_count}, Defect={defect_count}, OEE={round(oee*100, 2)}%")
+        else:
+            print(f">>> [LOGIC] Không có thay đổi dữ liệu cho {machinecode}")
+            
+    except Exception as e:
+        print(f">>> [LOGIC ERROR] Lỗi update_current_production_stats: {e}")
+
+async def check_and_create_downtime():
+    """Kiểm tra và tạo DowntimeRecord nếu quá threshold không có counter."""
+    try:
+        db = get_production_db()
+        db_master = get_database()
+        now = datetime.utcnow()
+        
+        # Lấy tất cả các máy đang có ProductionRecord "running"
+        active_productions = await db.production_records.find({"status": "running"}).to_list(None)
+        
+        for prod in active_productions:
+            m_code = prod["machinecode"]
+            p_code = prod.get("productcode")
+            
+            # Lấy threshold từ bảng workingparameter
+            wp_doc = await db_master["workingparameter"].find_one({"productcode": p_code})
+            # Nếu không tìm thấy hoặc không có field, mặc định là 300s (5 phút)
+            threshold_seconds = wp_doc.get("downtimethreshold", 300) if wp_doc else 300
+            
+            # Kiểm tra xem đã có downtime active chưa
+            active_dt = await db.downtime_records.find_one({"machinecode": m_code, "status": "active"})
+            if active_dt:
+                continue
+                
+            # Kiểm tra lần cuối nhận counter
+            last_iot = await db.iot_records.find_one(
+                {"machinecode": m_code},
+                sort=[("timestamp", -1)]
+            )
+            
+            last_ts = last_iot["timestamp"] if last_iot else prod["createtime"]
+            diff_seconds = (now - last_ts).total_seconds()
+            
+            if diff_seconds > threshold_seconds:
+                # Tạo bản ghi downtime mới
+                new_dt = DowntimeRecord(
+                    machinecode=m_code,
+                    start_time=now,
+                    status="active",
+                    reason=""
+                )
+                await db.downtime_records.insert_one(new_dt.model_dump(by_alias=True, exclude_none=True))
+                print(f">>> [DOWNTIME] Phát hiện máy {m_code} dừng hoạt động. Đã tạo DowntimeRecord.")
+                
+                # --- NEW: Gửi thông báo MQTT ---
+                mqtt_publish("topic/downtimeinput", {
+                    "id": str(new_dt.id) if new_dt.id else "new",
+                    "machine": m_code,
+                    "status": "active",
+                    "downtimecode": new_dt.downtime_code,
+                    "createtime": new_dt.start_time,
+                    "endtime": "None"
+                })
+
+    except Exception as e:
+        print(f">>> [DOWNTIME ERROR] Lỗi trong check_and_create_downtime: {e}")
+
+async def close_active_downtime(machinecode: str):
+    """Đóng bản ghi downtime khi có counter trở lại."""
+    try:
+        db = get_production_db()
+        now = datetime.utcnow()
+        
+        active_dt = await db.downtime_records.find_one({"machinecode": machinecode, "status": "active"})
+        if active_dt:
+            start_time = active_dt["start_time"]
+            duration = int((now - start_time).total_seconds())
+            
+            await db.downtime_records.update_one(
+                {"_id": active_dt["_id"]},
+                {
+                    "$set": {
+                        "end_time": now,
+                        "duration_seconds": duration,
+                        "status": "closed"
+                    }
+                }
+            )
+            print(f">>> [DOWNTIME] Máy {machinecode} hoạt động trở lại. Đã đóng downtime ({duration}s).")
+            
+            # --- NEW: Gửi thông báo MQTT khi đóng ---
+            mqtt_publish("topic/downtimeinput", {
+                "id": str(active_dt["_id"]),
+                "machine": machinecode,
+                "status": "closed",
+                "downtimecode": active_dt.get("downtime_code", "D0"),
+                "createtime": start_time,
+                "endtime": now
+            })
+            return True
+        return False
+    except Exception as e:
+        print(f">>> [DOWNTIME ERROR] Lỗi trong close_active_downtime: {e}")
+        return False

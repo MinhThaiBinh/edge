@@ -45,9 +45,14 @@ class ShiftMaster(BaseModel):
 class WorkingParameterMaster(BaseModel):
     productcode: str
     idealcyclesec: float
+    downtimethreshold: float
 
 # --- BẢNG TỰ SINH (IoT & Production) --- 
 # Các bảng này sẽ được lưu vào database "production"
+class IoTData(BaseModel):
+    raw_value: int = Field(..., alias="raw_value")
+    actual_cycle_time: float = Field(default=0.0, alias="actual_cycle_time")
+
 class IoTRecord(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
@@ -57,33 +62,43 @@ class IoTRecord(BaseModel):
     
     # Updated field name to machinecode as requested
     machinecode: str = Field(..., alias="machinecode")
-    raw_value: int = Field(..., alias="raw_value")
+    data: IoTData
+
+class ProductionKPIs(BaseModel):
+    availability: float = 0.0
+    performance: float = 0.0
+    quality: float = 0.0
+    oee: float = 0.0
+
+class ProductionStats(BaseModel):
+    total_count: int = 0
+    defect_count: int = 0
+    avg_cycle: float = 0.0
+    run_seconds: int = 0
+    downtime_seconds: int = 0
+    idealcyclesec: float = 0.0
+    plannedqty: int = 0
 
 class ProductionRecord(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
     
     id: Optional[str] = Field(alias="_id", default=None)
-    createtime: datetime = Field(default_factory=datetime.utcnow) #lấy thời điểm tạo ra record
     machinecode: str #lấy từ iot counter
     productcode: str #lấy từ iot counter
-    idealcyclesec: float #lấy từ bảng workingparameter
-    shiftcode: str #lấy từ bảng shift(thời điểm hiện tại là shift nào thì lấy shiftcode đó)
+    shiftcode: str #lấy từ bảng shift
+    status: str = "running" # running hoặc closed
+    is_synced: bool = False
+
+    # Time info
+    createtime: datetime = Field(default_factory=datetime.utcnow) #lấy thời điểm tạo ra record
     startshift: datetime = Field(default_factory=datetime.utcnow) #lấy thời điểm bắt đầu ca
     endshift: datetime = Field(default_factory=datetime.utcnow) #lấy thời điểm kết thúc ca
     breakstart: Optional[datetime] = None #lấy thời điểm bắt đầu nghỉ
     breakend: Optional[datetime] = None #lấy thời điểm kết thúc nghỉ
-    plannedqty: int #lấy từ bảng product qua
-    run_seconds: int #createtime-endtime
-    downtime_seconds: int
-    avg_cycle: float
-    total_count: int      # Lấy từ Counter
-    defect_count: int     # Lấy từ AI và HMI   
-    availability: float   # (A)
-    performance: float    # (P) 
-    quality: float        # (Q)
-    oee: float
-    is_synced: bool
-    status: str = "running" # running hoặc closed
+    
+    # Data Objects
+    kpis: ProductionKPIs = Field(default_factory=ProductionKPIs)
+    stats: ProductionStats = Field(default_factory=ProductionStats)
 
 class ChangeoverRecord(BaseModel):
     timestamp: datetime = Field(default_factory=datetime.utcnow)
@@ -91,3 +106,15 @@ class ChangeoverRecord(BaseModel):
     productcode: str
     oldproduct: Optional[str]
     source: str
+
+class DowntimeRecord(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+    
+    id: Optional[Any] = Field(alias="_id", default=None)
+    machinecode: str
+    start_time: datetime = Field(default_factory=datetime.utcnow)
+    end_time: Optional[datetime] = None
+    duration_seconds: int = 0
+    downtime_code: Optional[str] = "D0" # Mặc định là lỗi chưa xác định
+    reason: Optional[str] = ""
+    status: str = "active" # active hoặc closed
