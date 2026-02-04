@@ -102,6 +102,72 @@ class ProductionRecord(BaseModel):
     kpis: ProductionKPIs = Field(default_factory=ProductionKPIs)
     stats: ProductionStats = Field(default_factory=ProductionStats)
 
+class ShiftKPIs(BaseModel):
+    availability: float = 0.0
+    performance: float = 0.0
+    quality: float = 0.0
+    oee: float = 0.0
+
+class ShiftStats(BaseModel):
+    total_count: int = 0
+    defect_count: int = 0
+    run_seconds: int = 0
+    actual_run_seconds: int = 0
+    downtime_seconds: int = 0
+    
+class ShiftSummary(BaseModel):
+    machinecode: str
+    shiftcode: str
+    startshift: datetime
+    endshift: datetime
+    kpis: ShiftKPIs = Field(default_factory=ShiftKPIs)
+    stats: ShiftStats = Field(default_factory=ShiftStats)
+    timestamp: datetime = Field(default_factory=datetime.utcnow)
+
+class ShiftKPIs(BaseModel):
+    availability: float = 0.0
+    performance: float = 0.0
+    quality: float = 0.0
+    oee: float = 0.0
+
+class ShiftStats(BaseModel):
+    total_count: int = 0
+    defect_count: int = 0
+    run_seconds: int = 0
+    actual_run_seconds: int = 0
+    downtime_seconds: int = 0
+    
+class ShiftSummary(BaseModel):
+    machinecode: str
+    shiftcode: str
+    startshift: datetime
+    endshift: datetime
+    kpis: ShiftKPIs = Field(default_factory=ShiftKPIs)
+    stats: ShiftStats = Field(default_factory=ShiftStats)
+    timestamp: datetime = Field(default_factory=datetime.utcnow)
+
+class ShiftKPIs(BaseModel):
+    availability: float = 0.0
+    performance: float = 0.0
+    quality: float = 0.0
+    oee: float = 0.0
+
+class ShiftStats(BaseModel):
+    total_count: int = 0
+    defect_count: int = 0
+    run_seconds: int = 0
+    actual_run_seconds: int = 0
+    downtime_seconds: int = 0
+    
+class ShiftSummary(BaseModel):
+    machinecode: str
+    shiftcode: str
+    startshift: datetime
+    endshift: datetime
+    kpis: ShiftKPIs = Field(default_factory=ShiftKPIs)
+    stats: ShiftStats = Field(default_factory=ShiftStats)
+    timestamp: datetime = Field(default_factory=datetime.utcnow)
+
 class ChangeoverRecord(BaseModel):
     timestamp: datetime = Field(default_factory=datetime.utcnow)
     machinecode: str

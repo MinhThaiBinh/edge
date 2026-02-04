@@ -530,6 +530,72 @@ async def close_active_downtime(machinecode: str):
         print(f">>> [DOWNTIME ERROR] Lỗi trong close_active_downtime: {e}")
         return False
 
+
+async def get_current_shift_stats(machinecode: str):
+    """Tổng hợp KPI và Stats của nguyên ca hiện tại cho một máy."""
+    try:
+        db = get_production_db()
+        shift_info = await get_current_shift()
+        m_code = machinecode.strip()
+        
+        # Tìm tất cả các record của máy này trong ca hiện tại
+        # Bao gồm cả 'running' và 'closed'
+        records = await db.production_records.find({
+            "machinecode": m_code,
+            "shiftcode": shift_info["shiftcode"],
+            "createtime": {"$gte": shift_info["startshift"]}
+        }).to_list(None)
+        
+        total_count = 0
+        defect_count = 0
+        run_seconds = 0
+        actual_run_seconds = 0
+        downtime_seconds = 0
+        weighted_ideal_time = 0.0
+        
+        for r in records:
+            stats = r.get("stats", {})
+            total_count += stats.get("total_count", 0)
+            defect_count += stats.get("defect_count", 0)
+            run_seconds += stats.get("run_seconds", 0)
+            actual_run_seconds += stats.get("actual_run_seconds", 0)
+            downtime_seconds += stats.get("downtime_seconds", 0)
+            
+            # Tính weighted ideal time for P
+            ideal = stats.get("idealcyclesec", 1.0)
+            weighted_ideal_time += ideal * stats.get("total_count", 0)
+            
+        # Tính toán KPI tổng của ca
+        availability = actual_run_seconds / run_seconds if run_seconds > 0 else 0.0
+        performance = weighted_ideal_time / actual_run_seconds if actual_run_seconds > 0 else 0.0
+        quality = (total_count - defect_count) / total_count if total_count > 0 else 0.0
+        oee = availability * performance * quality
+        
+        summary = {
+            "machinecode": m_code,
+            "shiftcode": shift_info["shiftcode"],
+            "startshift": shift_info["startshift"],
+            "endshift": shift_info["endshift"],
+            "timestamp": datetime.utcnow(),
+            "kpis": {
+                "availability": round(availability, 4),
+                "performance": round(performance, 4),
+                "quality": round(quality, 4),
+                "oee": round(oee, 4)
+            },
+            "stats": {
+                "total_count": total_count,
+                "defect_count": defect_count,
+                "run_seconds": run_seconds,
+                "actual_run_seconds": actual_run_seconds,
+                "downtime_seconds": downtime_seconds
+            }
+        }
+        return summary
+    except Exception as e:
+        print(f">>> [LOGIC ERROR] Lỗi get_current_shift_stats: {e}")
+        return None
+
 async def ensure_active_production_records():
     """Kiểm tra tất cả các máy, nếu trong ca hiện tại chưa có record thì tự động sinh ra."""
     try:

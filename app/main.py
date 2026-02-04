@@ -19,7 +19,7 @@ from app.drivers.mqtt import (
     HMIDefectService, 
     HMIChangeoverService,
     DefectMasterService,
-    HMIDowntimeService
+    HMIDowntimeService, ProductionRecordService
 )
 from app.storage.db import ensure_timeseries
 from app.engine.logic import (
@@ -52,6 +52,7 @@ state = {
     "changeover_service": None,
     "downtime_service": None,
     "defect_master_service": None,
+    "production_service": None,
     "loop": None
 }
 
@@ -107,14 +108,20 @@ async def auto_record_ensurer_task():
 async def production_record_publisher_task():
     """Task chạy ngầm: Cập nhật KPI và Publish dữ liệu mỗi 1s."""
     from app.storage.db import get_production_db
+    from app.engine.logic import get_current_shift_stats
     db = get_production_db()
     while True:
         try:
+            # 1. Cập nhật record đang chạy (vẫn cần để tính OEE cá nhân)
             active_prods = await db.production_records.find({"status": "running"}).to_list(None)
             for p in active_prods:
                 m_code = p["machinecode"]
-                # Cập nhật OEE/Stats theo thời gian thực (để tính Availability ngay cả khi không có counter)
-                await update_current_production_stats(m_code)
+                await update_current_production_stats(m_code, do_publish=False) # Tắt publish record lẻ
+                
+                # 2. Lấy stats tổng hợp của cả ca và publish
+                shift_stats = await get_current_shift_stats(m_code)
+                if shift_stats:
+                    mqtt_publish("topic/get/productionrecord", shift_stats)
                 
 
         except Exception as e:
@@ -218,6 +225,7 @@ async def startup():
         state["changeover_service"] = HMIChangeoverService(MQTT_HOST, MQTT_PORT, MQTT_USER, MQTT_PASS)
         state["downtime_service"] = HMIDowntimeService(MQTT_HOST, MQTT_PORT, MQTT_USER, MQTT_PASS)
         state["defect_master_service"] = DefectMasterService(MQTT_HOST, MQTT_PORT, MQTT_USER, MQTT_PASS)
+        state["production_service"] = ProductionRecordService(MQTT_HOST, MQTT_PORT, MQTT_USER, MQTT_PASS)
 
         # Callbacks
         state["counter_service"].set_callback(counter_callback)
@@ -232,9 +240,10 @@ async def startup():
         state["changeover_service"].start()
         state["downtime_service"].start()
         state["defect_master_service"].start()
+        state["production_service"].start()
         
         # Thiết lập callback cho messaging util
-        set_mqtt_publish_func(state["downtime_service"].publish)
+        set_mqtt_publish_func(state["production_service"].publish)
         
         asyncio.create_task(auto_record_ensurer_task())
         asyncio.create_task(production_record_publisher_task())
