@@ -18,6 +18,7 @@ from app.drivers.mqtt import (
     CounterService, 
     HMIDefectService, 
     HMIChangeoverService,
+    DefectMasterService,
     HMIDowntimeService
 )
 from app.storage.db import ensure_timeseries
@@ -27,14 +28,15 @@ from app.engine.logic import (
     check_and_create_downtime, 
     update_current_production_stats,
     finalize_production_record_on_shift_change,
-    initialize_production_record
+    initialize_production_record, ensure_active_production_records
 )
-from app.utils.messaging import set_mqtt_publish_func
+from app.utils.messaging import set_mqtt_publish_func, mqtt_publish
 from app.engine.processor import (
     process_and_save_defect, 
     process_and_save_counter, 
     process_and_save_hmi_defect,
     process_hmi_changeover,
+    process_get_defect_master,
     process_hmi_downtime_reason
 )
 
@@ -49,6 +51,7 @@ state = {
     "hmi_service": None,
     "changeover_service": None,
     "downtime_service": None,
+    "defect_master_service": None,
     "loop": None
 }
 
@@ -75,12 +78,49 @@ def hmi_callback(data):
         asyncio.run_coroutine_threadsafe(process_and_save_hmi_defect(data), state["loop"])
 
 def changeover_callback(data):
+    print(f">>> [MQTT] Nhận dữ liệu Changeover từ HMI: {data}")
     if data: asyncio.run_coroutine_threadsafe(process_hmi_changeover(data), state["loop"])
+
+def defect_master_callback(data):
+    if data:
+        print(f">>> [MQTT] Nhận yêu cầu Defect Master")
+        asyncio.run_coroutine_threadsafe(process_get_defect_master(data), state["loop"])
 
 def downtime_callback(data):
     if data: asyncio.run_coroutine_threadsafe(process_hmi_downtime_reason(data), state["loop"])
 
 # --- TASKS ---
+
+
+
+async def auto_record_ensurer_task():
+    """Task chạy ngầm: Tự động sinh bản ghi sản xuất mỗi 5 phút nếu chưa có trong ca."""
+    print(">>> [AUTO-RECORD] Đã kích hoạt task tự động kiểm tra bản ghi mỗi 5 phút.")
+    while True:
+        try:
+            await ensure_active_production_records()
+        except Exception as e:
+            print(f">>> [AUTO-RECORD ERROR] Lỗi trong loop auto_record_ensurer: {e}")
+        
+        await asyncio.sleep(300) # 5 phút
+
+async def production_record_publisher_task():
+    """Task chạy ngầm: Cập nhật KPI và Publish dữ liệu mỗi 1s."""
+    from app.storage.db import get_production_db
+    db = get_production_db()
+    while True:
+        try:
+            active_prods = await db.production_records.find({"status": "running"}).to_list(None)
+            for p in active_prods:
+                m_code = p["machinecode"]
+                # Cập nhật OEE/Stats theo thời gian thực (để tính Availability ngay cả khi không có counter)
+                await update_current_production_stats(m_code)
+                
+
+        except Exception as e:
+            print(f">>> [PUBLISHER ERROR] Lỗi trong loop publish production record: {e}")
+        
+        await asyncio.sleep(1.0)
 
 async def main_monitor_task():
     """Task chạy ngầm: Giám sát đổi ca, Phát hiện downtime và Cập nhật KPI định kỳ."""
@@ -107,11 +147,11 @@ async def main_monitor_task():
             
             # Nếu bản ghi thuộc ca khác với ca hiện tại, chốt nó lại
             if p.get("shiftcode") != last_shift:
-                print(f">>> [STARTUP] Phát hiện bản ghi tồn đọng từ ca cũ ({p.get('shiftcode')}) cho máy {m_code}. Đang chốt...")
-                await finalize_production_record_on_shift_change(m_code, {}, now_utc)
-                # Mở bản ghi mới cho ca hiện tại
-                await initialize_production_record(m_code, p_code)
+                print(f">>> [STARTUP] Phát hiện bản ghi tồn đọng từ ca khác (Record: {p.get('shiftcode')} != Current: {last_shift}) cho máy {m_code}. Đang chốt...")
+                await finalize_production_record_on_shift_change(m_code, {}, now_utc, target_record_id=p.get("_id"))
+                # Không tự động mở ở đây, để ensure_active_production_records xử lý hoặc logic bên dưới
             else:
+                print(f">>> [STARTUP] Bản ghi máy {m_code} đang cùng ca {last_shift}. Giữ nguyên.")
                 # Nếu vẫn cùng ca, đảm bảo machinecode đã được strip trong DB
                 if p["machinecode"] != m_code:
                     await db.production_records.update_one({"_id": p["_id"]}, {"$set": {"machinecode": m_code}})
@@ -155,11 +195,7 @@ async def main_monitor_task():
             # 2. Kiểm tra downtime tự động (quá ngưỡng cấu hình)
             await check_and_create_downtime()
             
-            # 3. Cập nhật OEE/KPI real-time
-            db = get_production_db()
-            active_prods = await db.production_records.find({"status": "running"}).to_list(None)
-            for p in active_prods:
-                await update_current_production_stats(p["machinecode"])
+            # 3. Cập nhật OEE/KPI đã được chuyển sang production_record_publisher_task (1s/lần)
                 
         except Exception as e:
             print(f">>> [MONITOR ERROR] Lỗi trong loop monitor: {e}")
@@ -181,22 +217,27 @@ async def startup():
         state["hmi_service"] = HMIDefectService(MQTT_HOST, MQTT_PORT, MQTT_USER, MQTT_PASS)
         state["changeover_service"] = HMIChangeoverService(MQTT_HOST, MQTT_PORT, MQTT_USER, MQTT_PASS)
         state["downtime_service"] = HMIDowntimeService(MQTT_HOST, MQTT_PORT, MQTT_USER, MQTT_PASS)
+        state["defect_master_service"] = DefectMasterService(MQTT_HOST, MQTT_PORT, MQTT_USER, MQTT_PASS)
 
         # Callbacks
         state["counter_service"].set_callback(counter_callback)
         state["hmi_service"].set_callback(hmi_callback)
         state["changeover_service"].set_callback(changeover_callback)
         state["downtime_service"].set_callback(downtime_callback)
+        state["defect_master_service"].set_callback(defect_master_callback)
 
         # Start Services
         state["counter_service"].start()
         state["hmi_service"].start()
         state["changeover_service"].start()
         state["downtime_service"].start()
+        state["defect_master_service"].start()
         
         # Thiết lập callback cho messaging util
         set_mqtt_publish_func(state["downtime_service"].publish)
         
+        asyncio.create_task(auto_record_ensurer_task())
+        asyncio.create_task(production_record_publisher_task())
         asyncio.create_task(main_monitor_task())
         print("--- Hệ thống đã sẵn sàng ---")
     except Exception as e:
@@ -209,4 +250,5 @@ async def shutdown():
     if state["hmi_service"]: state["hmi_service"].stop()
     if state["changeover_service"]: state["changeover_service"].stop()
     if state["downtime_service"]: state["downtime_service"].stop()
+    if state["defect_master_service"]: state["defect_master_service"].stop()
     if state["camera_sys"]: state["camera_sys"].stop()

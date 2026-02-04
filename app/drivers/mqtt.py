@@ -7,6 +7,7 @@ class BaseMQTTService:
         self.broker_port = broker_port
         self.topic = topic
         self.prefix = prefix
+        print(f">>> [{self.prefix}] Initializing on topic: {self.topic}")
         
         try:
             # Paho MQTT v2.0+ support
@@ -34,6 +35,7 @@ class BaseMQTTService:
         try:
             payload_str = msg.payload.decode("utf-8")
             data = json.loads(payload_str)
+            print(f"[{self.prefix}] Received on {msg.topic}: {msg.payload}")
             if self.external_callback:
                 self.external_callback(data)
         except Exception as e:
@@ -68,8 +70,12 @@ class HMIDefectService(BaseMQTTService):
 
 class HMIChangeoverService(BaseMQTTService):
     def __init__(self, host, port, user, pw):
-        super().__init__(host, port, "topic/changeover/hmi", user, pw, "MQTT CHANGEOVER")
+        super().__init__(host, port, "topic/changover/hmi", user, pw, "MQTT CHANGEOVER")
 
 class HMIDowntimeService(BaseMQTTService):
     def __init__(self, host, port, user, pw):
         super().__init__(host, port, "topic/downtimeinput", user, pw, "MQTT DOWNTIME")
+
+class DefectMasterService(BaseMQTTService):
+    def __init__(self, host, port, user, pw):
+        super().__init__(host, port, "topic/get/defectmaster", user, pw, "MQTT DEFECT MASTER")

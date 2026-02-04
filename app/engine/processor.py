@@ -15,22 +15,38 @@ async def process_and_save_defect(ai_data, machinecode=None):
     if ai_data is None:
         return None
 
-    count = ai_data["count"]
+    count = ai_data.get("count", 0)
+    ng_pill = ai_data.get("ng_pill", 0)
+    machinecode = machinecode.strip() if machinecode else None
     
+    # 1. Xử lý lỗi thiếu số lượng (d1)
     if count < THRESHOLD:
-        print(f">>> [AI] Phát hiện lỗi: {count} < {THRESHOLD}. Đang lưu DefectRecord...")
-        machinecode = machinecode.strip() if machinecode else None
+        print(f">>> [AI] Phát hiện lỗi thiếu viên: {count} < {THRESHOLD}. Đang lưu DefectRecord d1...")
         defect_doc = {
             "timestamp": datetime.utcnow(),
             "node_id": NODE_ID,
             "machinecode": machinecode,
             "defectcode": "d1",
             "source": "CAM",
-            "raw_image": ai_data["image_bytes"]
+            "raw_image": ai_data.get("image_bytes")
         }
         await db_production["defect_records"].insert_one(defect_doc)
-        # Cập nhật KPI ngay khi có lỗi
-        await update_current_production_stats(machinecode)
+        await update_current_production_stats(machinecode, do_publish=False)
+        return True
+
+    # 2. Xử lý lỗi viên nén không đạt (ng_pill -> d3)
+    if ng_pill > 0:
+        print(f">>> [AI] Phát hiện viên lỗi (ng_pill): {ng_pill}. Đang lưu DefectRecord d3...")
+        defect_doc = {
+            "timestamp": datetime.utcnow(),
+            "node_id": NODE_ID,
+            "machinecode": machinecode,
+            "defectcode": "d3",
+            "source": "CAM",
+            "raw_image": ai_data.get("image_bytes")
+        }
+        await db_production["defect_records"].insert_one(defect_doc)
+        await update_current_production_stats(machinecode, do_publish=False)
         return True
     
     print(f">>> [AI] OK: Số lượng {count} đạt yêu cầu.")
@@ -57,8 +73,7 @@ async def process_and_save_hmi_defect(hmi_data):
         }
         await db_production["defect_records"].insert_one(defect_doc)
         print(f">>> [DB] Đã lưu Defect từ HMI: {defectcode} cho {machinecode}")
-        # Cập nhật KPI ngay khi có lỗi từ HMI
-        await update_current_production_stats(machinecode)
+        await update_current_production_stats(machinecode, do_publish=False)
         return True
     except Exception as e:
         print(f">>> [DB ERROR] Lưu HMI Defect thất bại: {e}")
@@ -86,30 +101,25 @@ async def process_and_save_counter(counter_msg):
         if last_record and "timestamp" in last_record:
             prev_ts = last_record["timestamp"]
             diff = (now - prev_ts).total_seconds()
-            # Giới hạn giá trị hợp lý (ví dụ: nếu lâu quá không có signal thì reset hoặc cap lại)
             actual_cycle_time = round(diff, 2)
             
-        # 2. Tạo record với cấu trúc object mới
-        record = IoTRecord(
-            timestamp=now,
-            machinecode=machinecode,
-            data={
+        # 2. Lưu IoT record
+        record = {
+            "timestamp": now,
+            "machinecode": machinecode,
+            "data": {
                 "raw_value": raw_value,
                 "actual_cycle_time": actual_cycle_time
             }
-        )
-        
-        doc = record.model_dump(by_alias=True, exclude_none=True)
-        if "id" in doc:
-            doc["_id"] = doc.pop("id")
-        if "_id" in doc and doc["_id"] is None:
-            del doc["_id"]
-            
-        await db_production["iot_records"].insert_one(doc)
+        }
+        await db_production["iot_records"].insert_one(record)
         print(f">>> [DB] Saved IoTRecord for {machinecode}: val={raw_value}, cycle={actual_cycle_time}s")
         
-        # Cập nhật KPI real-time cho ProductionRecord
-        await update_current_production_stats(machinecode)
+        # 3. Cập nhật OEE/KPI
+        await update_current_production_stats(machinecode, do_publish=False)
+        
+
+            
         return True
     except Exception as e:
         print(f">>> [DB ERROR] IoTRecord save failed: {e}")
@@ -137,7 +147,6 @@ async def process_hmi_changeover(data):
         print(f">>> [DB] Đã lưu Changeover sự kiện: {new_productcode} cho {machinecode}")
 
         if old_productcode:
-            print(f">>> [PROCESSOR] Đang chốt sản lượng cho sản phẩm cũ: {old_productcode}")
             await create_production_record_on_changeover(
                 machinecode=machinecode,
                 old_productcode=old_productcode,
@@ -147,20 +156,17 @@ async def process_hmi_changeover(data):
 
         print(f">>> [PROCESSOR] Đang khởi tạo bản ghi mới cho sản phẩm: {new_productcode}")
         await initialize_production_record(machinecode, new_productcode)
-
         return True
     except Exception as e:
         print(f">>> [DB ERROR] Lưu Changeover thất bại: {e}")
         return False
 
 async def process_hmi_downtime_reason(data):
-    """Xử lý cập nhật lý do downtime từ topic/downtimeinput."""
     if not data:
         return False
         
     try:
-        # Nếu là msg do chính hệ thống phản hồi (có status), bỏ qua để tránh vòng lặp
-        if "status" in data:
+        if "status" in data and data.get("status") in ["active", "closed"]:
             return False
 
         record_id_str = data.get("id")
@@ -168,10 +174,8 @@ async def process_hmi_downtime_reason(data):
         downtime_code = (data.get("downtimecode") or "").strip()
         
         if not record_id_str:
-            print(">>> [DOWNTIME] Từ chối msg: Thiếu ID bản ghi")
             return False
 
-        # 1. Kiểm tra tính hợp lệ của downtime_code trong Master Data (Case-insensitive)
         db_master = get_database()
         master_entry = await db_master["downtime"].find_one({
             "downtimecode": {"$regex": f"^{downtime_code}$", "$options": "i"}
@@ -179,48 +183,65 @@ async def process_hmi_downtime_reason(data):
         
         if not master_entry:
             print(f">>> [DOWNTIME ERROR] Mã lỗi '{downtime_code}' không tồn tại trong danh mục 'downtime'")
-            return False
-            
-        # Sử dụng đúng mã lỗi từ Master Data thay vì mã user gửi lên
-        downtime_code = master_entry.get("downtimecode", downtime_code)
-            
-        reason = master_entry.get("downtimename", "Unknown Reason")
+            downtime_code = "default"
+            reason = "Unknown Reason"
+        else:
+            downtime_code = master_entry.get("downtimecode")
+            reason = master_entry.get("downtimename")
         
-        db = db_production
-        # 2. Tìm bản ghi downtime bằng ID
         try:
-            target = await db.downtime_records.find_one({"_id": ObjectId(record_id_str)})
+            query = {"_id": ObjectId(record_id_str)}
         except:
-            print(f">>> [DOWNTIME] ID không hợp lệ: {record_id_str}")
-            return False
-            
-        if target:
-            await db.downtime_records.update_one(
-                {"_id": target["_id"]},
-                {"$set": {
-                    "downtime_code": downtime_code,
-                    "reason": reason
-                }}
-            )
+            query = {"machinecode": machinecode, "status": "active"}
+
+        res = await db_production["downtime_records"].update_one(
+            query,
+            {"$set": {
+                "downtime_code": downtime_code,
+                "reason": reason
+            }}
+        )
+        
+        if res.modified_count > 0:
+            target = await db_production["downtime_records"].find_one(query)
             print(f">>> [DOWNTIME] Đã cập nhật cho ID {record_id_str}: {downtime_code} - {reason}")
             
-            # --- Gửi thông báo MQTT sau khi cập nhật ---
             mqtt_publish("topic/downtimeinput", {
                 "id": str(target["_id"]),
                 "machine": machinecode or target.get("machinecode"),
-                "status": target.get("status", "unknown"),
+                "status": target.get("status"),
                 "downtimecode": downtime_code,
                 "createtime": target.get("start_time"),
                 "endtime": target.get("end_time") if target.get("end_time") else "None"
             })
             
-            # Sau khi cập nhật downtime, update lại production kpi
-            await update_current_production_stats(machinecode or target.get("machinecode"))
+            await update_current_production_stats(machinecode or target.get("machinecode"), do_publish=False)
             return True
-        else:
-            print(f">>> [DOWNTIME] Không tìm thấy bản ghi ID {record_id_str}")
-            return False
-            
+        return False
     except Exception as e:
         print(f">>> [DOWNTIME ERROR] Lỗi update lý do: {e}")
+        return False
+
+async def process_get_defect_master(data):
+    """Xử lý yêu cầu lấy danh sách defect master từ HMI/Client."""
+    try:
+        machine = data.get("machine", "Unknown")
+        print(f">>> [PROCESSOR] Nhận yêu cầu defect master cho máy: {machine}")
+        
+        db_master = get_database()
+        # Lấy tất cả defect từ bảng 'defect'
+        defects = await db_master["defect"].find({}, {"_id": 0}).to_list(None)
+        
+        # Publish kết quả trả về topic mong muốn (thường là cùng topic hoặc topic response)
+        # Theo yêu cầu là publish vào, ta dùng lại topic/get/defectmaster hoặc một topic response
+        # Ở đây ta publish vào chính nó hoặc topic quy định để client nhận
+        mqtt_publish("topic/get/defectmaster/res", {
+            "machine": machine,
+            "defects": defects,
+            "timestamp": datetime.utcnow()
+        })
+        print(f">>> [DB] Đã gửi {len(defects)} defect records cho {machine}")
+        return True
+    except Exception as e:
+        print(f">>> [ERROR] Lỗi lấy defect master: {e}")
         return False

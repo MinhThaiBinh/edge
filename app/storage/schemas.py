@@ -92,6 +92,7 @@ class ProductionRecord(BaseModel):
 
     # Time info
     createtime: datetime = Field(default_factory=datetime.utcnow) #lấy thời điểm tạo ra record
+    endtime: Optional[datetime] = None #lấy thời điểm chốt record
     startshift: datetime = Field(default_factory=datetime.utcnow) #lấy thời điểm bắt đầu ca
     endshift: datetime = Field(default_factory=datetime.utcnow) #lấy thời điểm kết thúc ca
     breakstart: Optional[datetime] = None #lấy thời điểm bắt đầu nghỉ

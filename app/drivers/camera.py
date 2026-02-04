@@ -33,17 +33,31 @@ class CameraSystem:
 
         # 1. AI Inference
         results = self.model.predict(source=frame, imgsz=640, conf=0.25, verbose=False)
-        count = len(results[0].boxes)
         
-        # 2. Vẽ kết quả lên ảnh
+        # 2. Phân loại và đếm
+        classes = results[0].boxes.cls.tolist() if hasattr(results[0].boxes, 'cls') else []
+        count = len(classes)
+        
+        # Đếm ng_pill dựa trên class name
+        ng_pill = 0
+        names = self.model.names
+        for cls_idx in classes:
+            name = names.get(cls_idx, "").lower()
+            if "ng" in name or "defect" in name:
+                ng_pill += 1
+                
+        print(f">>> [CAMERA] Detect thành công: {count} objects (NG Pill: {ng_pill})", flush=True)
+        
+        # 3. Vẽ kết quả lên ảnh
         annotated_frame = results[0].plot()
 
-        # 3. Encode ảnh sang dạng Binary (JPEG)
+        # 4. Encode ảnh sang dạng Binary (JPEG)
         success, buffer = cv2.imencode(".jpg", annotated_frame)
         
         if success:
             return {
                 "count": count,
+                "ng_pill": ng_pill,
                 "image_bytes": buffer.tobytes()
             }
         return None
