@@ -73,31 +73,35 @@ class ProductionKPIs(BaseModel):
 class ProductionStats(BaseModel):
     total_count: int = 0
     defect_count: int = 0
+    good_product: int = 0
     avg_cycle: float = 0.0
     run_seconds: int = 0
+    actual_run_seconds: int = 0
     downtime_seconds: int = 0
     idealcyclesec: float = 0.0
-    plannedqty: int = 0
+    PlannedQty: int = Field(0, alias="PlannedQty")
 
 class ProductionRecord(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
     
     id: Optional[str] = Field(alias="_id", default=None)
-    machinecode: str #lấy từ iot counter
-    productcode: str #lấy từ iot counter
-    shiftcode: str #lấy từ bảng shift
-    status: str = "running" # running hoặc closed
-    machinestatus: str = "running" # running hoặc stopped (Trạng thái thực tế máy)
+    machinecode: str 
+    productcode: str 
+    shiftcode: str 
+    status: str = "running" 
+    machinestatus: str = "running" 
+    productname: Optional[str] = None
+    machinename: Optional[str] = None
     is_synced: bool = False
 
     # Time info
-    createtime: datetime = Field(default_factory=datetime.utcnow) #lấy thời điểm tạo ra record
-    endtime: Optional[datetime] = None #lấy thời điểm chốt record
-    startshift: datetime = Field(default_factory=datetime.utcnow) #lấy thời điểm bắt đầu ca
-    endshift: datetime = Field(default_factory=datetime.utcnow) #lấy thời điểm kết thúc ca
-    breakstart: Optional[datetime] = None #lấy thời điểm bắt đầu nghỉ
-    breakend: Optional[datetime] = None #lấy thời điểm kết thúc nghỉ
-    
+    createtime: datetime = Field(default_factory=datetime.utcnow) 
+    endtime: Optional[datetime] = None 
+    startshift: datetime = Field(default_factory=datetime.utcnow) 
+    endshift: datetime = Field(default_factory=datetime.utcnow) 
+    breakstart: Optional[datetime] = None 
+    breakend: Optional[datetime] = None 
+
     # Data Objects
     kpis: ProductionKPIs = Field(default_factory=ProductionKPIs)
     stats: ProductionStats = Field(default_factory=ProductionStats)
@@ -111,9 +115,14 @@ class ShiftKPIs(BaseModel):
 class ShiftStats(BaseModel):
     total_count: int = 0
     defect_count: int = 0
+    good_product: int = 0
     run_seconds: int = 0
     actual_run_seconds: int = 0
     downtime_seconds: int = 0
+    idealcyclesec: float = 0.0
+    avg_cycle: float = 0.0
+    PlannedQty: int = Field(0, alias="PlannedQty") # Weighted plannedqty for the whole shift
+    StandardTime: float = Field(0.0, alias="StandardTime")
     
 class ShiftSummary(BaseModel):
     machinecode: str
@@ -122,50 +131,10 @@ class ShiftSummary(BaseModel):
     endshift: datetime
     kpis: ShiftKPIs = Field(default_factory=ShiftKPIs)
     stats: ShiftStats = Field(default_factory=ShiftStats)
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
-
-class ShiftKPIs(BaseModel):
-    availability: float = 0.0
-    performance: float = 0.0
-    quality: float = 0.0
-    oee: float = 0.0
-
-class ShiftStats(BaseModel):
-    total_count: int = 0
-    defect_count: int = 0
-    run_seconds: int = 0
-    actual_run_seconds: int = 0
-    downtime_seconds: int = 0
-    
-class ShiftSummary(BaseModel):
-    machinecode: str
-    shiftcode: str
-    startshift: datetime
-    endshift: datetime
-    kpis: ShiftKPIs = Field(default_factory=ShiftKPIs)
-    stats: ShiftStats = Field(default_factory=ShiftStats)
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
-
-class ShiftKPIs(BaseModel):
-    availability: float = 0.0
-    performance: float = 0.0
-    quality: float = 0.0
-    oee: float = 0.0
-
-class ShiftStats(BaseModel):
-    total_count: int = 0
-    defect_count: int = 0
-    run_seconds: int = 0
-    actual_run_seconds: int = 0
-    downtime_seconds: int = 0
-    
-class ShiftSummary(BaseModel):
-    machinecode: str
-    shiftcode: str
-    startshift: datetime
-    endshift: datetime
-    kpis: ShiftKPIs = Field(default_factory=ShiftKPIs)
-    stats: ShiftStats = Field(default_factory=ShiftStats)
+    machinestatus: str = "running"
+    productcode: Optional[str] = None
+    productname: Optional[str] = None
+    machinename: Optional[str] = None
     timestamp: datetime = Field(default_factory=datetime.utcnow)
 
 class ChangeoverRecord(BaseModel):
@@ -183,6 +152,6 @@ class DowntimeRecord(BaseModel):
     start_time: datetime = Field(default_factory=datetime.utcnow)
     end_time: Optional[datetime] = None
     duration_seconds: int = 0
-    downtime_code: Optional[str] = "default" # Mặc định là lỗi chưa xác định
+    downtime_code: Optional[str] = "default" 
     reason: Optional[str] = ""
-    status: str = "active" # active hoặc closed
+    status: str = "active"

@@ -19,7 +19,9 @@ from app.drivers.mqtt import (
     HMIDefectService, 
     HMIChangeoverService,
     DefectMasterService,
-    HMIDowntimeService, ProductionRecordService
+    HMIDowntimeService, ProductionRecordService,
+    ProductMasterService, HMIGetDowntimeService,
+    HMIGetDowntimeMasterService, HMIDowntimeUpdateService
 )
 from app.storage.db import ensure_timeseries
 from app.engine.logic import (
@@ -37,14 +39,17 @@ from app.engine.processor import (
     process_and_save_hmi_defect,
     process_hmi_changeover,
     process_get_defect_master,
-    process_hmi_downtime_reason
+    process_hmi_downtime_reason,
+    process_get_product_master,
+    process_get_downtime_request,
+    process_get_downtime_master,
+    process_update_downtime_reason
 )
 
 app = FastAPI(title="Edge IoT AI Backend")
 
 
 
-# State
 state = {
     "camera_sys": None,
     "counter_service": None,
@@ -53,6 +58,10 @@ state = {
     "downtime_service": None,
     "defect_master_service": None,
     "production_service": None,
+    "product_master_service": None,
+    "get_downtime_service": None,
+    "get_downtime_master_service": None,
+    "update_downtime_service": None,
     "loop": None
 }
 
@@ -61,15 +70,15 @@ state = {
 def counter_callback(data):
     try:
         if not data or not isinstance(data, dict): return
-        device_id = data.get("device")
-        if device_id:
-            print(f">>> [MQTT] Nhận dữ liệu counter từ {device_id}")
+        machine_code = data.get("machinecode") or data.get("device")
+        if machine_code:
+            print(f">>> [MQTT] Nhận dữ liệu counter từ {machine_code}")
             asyncio.run_coroutine_threadsafe(process_and_save_counter(data), state["loop"])
             if state["camera_sys"]:
-                print(f">>> [AI] Kích hoạt camera cho {device_id}...")
+                print(f">>> [AI] Kích hoạt camera cho {machine_code}...")
                 ai_res = state["camera_sys"].capture_and_detect()
                 if ai_res:
-                    asyncio.run_coroutine_threadsafe(process_and_save_defect(ai_res, machinecode=device_id), state["loop"])
+                    asyncio.run_coroutine_threadsafe(process_and_save_defect(ai_res, machinecode=machine_code), state["loop"])
     except Exception as e:
         print(f">>> [ERROR] Lỗi counter_callback: {e}")
 
@@ -89,6 +98,26 @@ def defect_master_callback(data):
 
 def downtime_callback(data):
     if data: asyncio.run_coroutine_threadsafe(process_hmi_downtime_reason(data), state["loop"])
+
+def product_master_callback(data):
+    if data:
+        print(f">>> [MQTT] Nhận yêu cầu Product Master: {data}")
+        asyncio.run_coroutine_threadsafe(process_get_product_master(data), state["loop"])
+
+def get_downtime_callback(data):
+    if data:
+        print(f">>> [MQTT] Nhận yêu cầu Get Downtime: {data}")
+        asyncio.run_coroutine_threadsafe(process_get_downtime_request(data), state["loop"])
+
+def get_downtime_master_callback(data):
+    if data:
+        print(f">>> [MQTT] Nhận yêu cầu Get Downtime Master: {data}")
+        asyncio.run_coroutine_threadsafe(process_get_downtime_master(data), state["loop"])
+
+def update_downtime_callback(data):
+    if data:
+        print(f">>> [MQTT] Nhận yêu cầu Update Downtime Reason: {data}")
+        asyncio.run_coroutine_threadsafe(process_update_downtime_reason(data), state["loop"])
 
 # --- TASKS ---
 
@@ -207,7 +236,7 @@ async def main_monitor_task():
         except Exception as e:
             print(f">>> [MONITOR ERROR] Lỗi trong loop monitor: {e}")
             
-        await asyncio.sleep(30)
+        await asyncio.sleep(5)
 
 # --- LIFECYCLE ---
 
@@ -226,6 +255,10 @@ async def startup():
         state["downtime_service"] = HMIDowntimeService(MQTT_HOST, MQTT_PORT, MQTT_USER, MQTT_PASS)
         state["defect_master_service"] = DefectMasterService(MQTT_HOST, MQTT_PORT, MQTT_USER, MQTT_PASS)
         state["production_service"] = ProductionRecordService(MQTT_HOST, MQTT_PORT, MQTT_USER, MQTT_PASS)
+        state["product_master_service"] = ProductMasterService(MQTT_HOST, MQTT_PORT, MQTT_USER, MQTT_PASS)
+        state["get_downtime_service"] = HMIGetDowntimeService(MQTT_HOST, MQTT_PORT, MQTT_USER, MQTT_PASS)
+        state["get_downtime_master_service"] = HMIGetDowntimeMasterService(MQTT_HOST, MQTT_PORT, MQTT_USER, MQTT_PASS)
+        state["update_downtime_service"] = HMIDowntimeUpdateService(MQTT_HOST, MQTT_PORT, MQTT_USER, MQTT_PASS)
 
         # Callbacks
         state["counter_service"].set_callback(counter_callback)
@@ -233,6 +266,10 @@ async def startup():
         state["changeover_service"].set_callback(changeover_callback)
         state["downtime_service"].set_callback(downtime_callback)
         state["defect_master_service"].set_callback(defect_master_callback)
+        state["product_master_service"].set_callback(product_master_callback)
+        state["get_downtime_service"].set_callback(get_downtime_callback)
+        state["get_downtime_master_service"].set_callback(get_downtime_master_callback)
+        state["update_downtime_service"].set_callback(update_downtime_callback)
 
         # Start Services
         state["counter_service"].start()
@@ -241,6 +278,10 @@ async def startup():
         state["downtime_service"].start()
         state["defect_master_service"].start()
         state["production_service"].start()
+        state["product_master_service"].start()
+        state["get_downtime_service"].start()
+        state["get_downtime_master_service"].start()
+        state["update_downtime_service"].start()
         
         # Thiết lập callback cho messaging util
         set_mqtt_publish_func(state["production_service"].publish)
@@ -260,4 +301,8 @@ async def shutdown():
     if state["changeover_service"]: state["changeover_service"].stop()
     if state["downtime_service"]: state["downtime_service"].stop()
     if state["defect_master_service"]: state["defect_master_service"].stop()
+    if state["product_master_service"]: state["product_master_service"].stop()
+    if state["get_downtime_service"]: state["get_downtime_service"].stop()
+    if state["get_downtime_master_service"]: state["get_downtime_master_service"].stop()
+    if state["update_downtime_service"]: state["update_downtime_service"].stop()
     if state["camera_sys"]: state["camera_sys"].stop()

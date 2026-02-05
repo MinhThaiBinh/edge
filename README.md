@@ -11,16 +11,29 @@ fast_api_edge/
 ├── app/
 │   ├── main.py            # Entry point: Quản lý Lifecycle & Startup Workers
 │   ├── config.py          # Cấu hình tập trung (MQTT, Camera, DB, Thresholds)
-│   ├── drivers/           # Tầng thiết bị (Hardware: Camera AI, MQTT Clients)
-│   ├── engine/            # Bộ não xử lý (Signal Processing & OEE Logic)
-│   ├── storage/           # Lưu trữ (MongoDB Connection & Schemas)
-│   └── tasks/             # Các tác vụ chạy ngầm (Shift Monitor)
+│   ├── drivers/           # Tầng thiết bị ([Xem chi tiết](app/drivers/README.md))
+│   ├── engine/            # Bộ não xử lý ([Xem chi tiết](app/engine/README.md))
+│   ├── storage/           # Lưu trữ ([Xem chi tiết](app/storage/README.md))
+│   ├── tasks/             # Tác vụ chạy ngầm ([Xem chi tiết](app/tasks/README.md))
+│   └── utils/             # Tiện ích ([Xem chi tiết](app/utils/README.md))
 ├── run.py                 # Script khởi động nhanh hệ thống
 ├── weights/               # Chứa các Model YOLO (.pt)
 └── .gitignore             # Cấu hình bỏ qua các file rác và model nặng
 ```
 
-## 2. Quy tắc sinh mã (Record ID)
+## 2. Các tính năng mới bổ sung
+
+### Quản lý thông tin chi tiết
+*   **Good Product:** Tự động tính toán lượng hàng đạt chuẩn (`good_product = total_count - defect_count`).
+*   **Machine Name & Product Name:** Tự động tra cứu và lưu tên máy, tên sản phẩm từ Master Data vào từng bản ghi để dễ dàng báo cáo.
+*   **Machine Status:** Theo dõi trạng thái máy (`Running`, `Stopped`) dựa trên tín hiệu sản lượng và downtime.
+
+### MQTT Product Request
+Hệ thống hỗ trợ phản hồi danh mục sản phẩm qua MQTT:
+- Topic nhận yêu cầu: `topic/get/productcode`
+- Topic trả về: `topic/get/productcode/res` (Chứa danh sách toàn bộ sản phẩm).
+
+## 3. Quy tắc sinh mã (Record ID)
 
 Mỗi lượt sản xuất trên một máy được định danh duy nhất (Unique ID):
 `{Mã_Sản_Phẩm}-{Ngày}-{Tháng}-{Năm}-{Mã_Máy}-{STT}`

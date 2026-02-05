@@ -83,3 +83,22 @@ class DefectMasterService(BaseMQTTService):
 class ProductionRecordService(BaseMQTTService):
     def __init__(self, host, port, user, pw):
         super().__init__(host, port, "topic/get/productionrecord", user, pw, "MQTT PRODUCTION")
+
+class ProductMasterService(BaseMQTTService):
+    def __init__(self, host, port, user, pw):
+        super().__init__(host, port, "topic/get/productcode", user, pw, "MQTT PRODUCT MASTER")
+
+class HMIGetDowntimeService(BaseMQTTService):
+    def __init__(self, host, port, user, pw):
+        super().__init__(host, port, "topic/get/downtime", user, pw, "MQTT GET DOWNTIME")
+
+class HMIGetDowntimeMasterService(BaseMQTTService):
+    def __init__(self, host, port, user, pw):
+        super().__init__(host, port, "topic/get/downtimecode", user, pw, "MQTT GET DOWNTIME MASTER")
+
+class HMIDowntimeUpdateService(BaseMQTTService):
+    def __init__(self, host, port, user, pw):
+        super().__init__(host, port, "topic/pub/downtimereason", user, pw, "MQTT DOWNTIME UPDATE")
+
+
+

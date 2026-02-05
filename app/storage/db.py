@@ -24,6 +24,10 @@ async def ensure_collections():
             await db_production.create_collection("defect_records")
             print(">>> [DB] Đã tạo bảng defect_records")
             
+        if "shift_stats" not in existing_collections:
+            await db_production.create_collection("shift_stats")
+            print(">>> [DB] Đã tạo bảng shift_stats")
+            
     except Exception as e:
         print(f">>> [DB ERROR] Lỗi khởi tạo collection: {e}")
 

@@ -53,16 +53,18 @@ async def process_and_save_defect(ai_data, machinecode=None):
     return False
 
 async def process_and_save_hmi_defect(hmi_data):
+    """
+    Standard Payload: { "machinecode": "m001", "defectcode": "d1" }
+    """
     if not hmi_data:
         return False
 
     try:
-        print(f">>> [PROCESSOR] Nhận dữ liệu Defect từ HMI: {hmi_data}")
-        machinecode = (hmi_data.get("device") or hmi_data.get("machinecode", "")).strip()
-        defectcode = (hmi_data.get("defectcode", "")).strip()
+        machinecode = str(hmi_data.get("machinecode", "")).strip()
+        defectcode = str(hmi_data.get("defectcode", "")).strip()
         
-        if not machinecode:
-            print(">>> [DB ERROR] Lưu HMI Defect thất bại: Thiếu machinecode/device")
+        if not machinecode or not defectcode:
+            print(f">>> [PROCESSOR ERROR] HMI Defect thiếu thông tin hoặc sai định dạng: {hmi_data}")
             return False
 
         defect_doc = {
@@ -80,13 +82,20 @@ async def process_and_save_hmi_defect(hmi_data):
         return False
 
 async def process_and_save_counter(counter_msg):
+    """
+    Standard Payload: { "machinecode": "m002", "timestamp": "...", "shootcountnumber": 1439 }
+    """
     if not counter_msg:
         return False
 
     try:
-        machinecode = counter_msg.get("device", "").strip()
+        machinecode = str(counter_msg.get("machinecode", "")).strip()
         raw_value = counter_msg.get("shootcountnumber", 0)
         now = datetime.utcnow()
+        
+        if not machinecode:
+            print(f">>> [PROCESSOR ERROR] Counter thiếu machinecode: {counter_msg}")
+            return False
         
         # 0. Nếu đang có downtime active thì đóng lại
         await close_active_downtime(machinecode)
@@ -126,16 +135,22 @@ async def process_and_save_counter(counter_msg):
         return False
 
 async def process_hmi_changeover(data):
+    """
+    Standard Payload: { "machinecode": "m002", "product": "pd002", "oldproduct": "pd001" }
+    """
     if not data:
         return False
 
     try:
-        print(f">>> [PROCESSOR] Nhận dữ liệu Changeover từ HMI: {data}")
         now = datetime.utcnow()
-        machinecode = (data.get("device") or data.get("machinecode", "")).strip()
-        new_productcode = (data.get("productcode", "")).strip()
-        old_productcode = (data.get("oldproduct") or data.get("old_productcode", "")).strip()
+        machinecode = str(data.get("machine") or data.get("machinecode", "")).strip()
+        new_productcode = str(data.get("product") or data.get("productcode", "")).strip()
+        old_productcode = str(data.get("oldproduct") or data.get("oldproductcode", "")).strip()
         
+        if not machinecode or not new_productcode:
+            print(f">>> [PROCESSOR ERROR] Changeover thiếu thông tin: {data}")
+            return False
+
         changeover_doc = {
             "timestamp": now,
             "machinecode": machinecode,
@@ -162,6 +177,9 @@ async def process_hmi_changeover(data):
         return False
 
 async def process_hmi_downtime_reason(data):
+    """
+    Standard Payload: { "id": "objectid_string", "machinecode": "m001", "downtimecode": "dt01" }
+    """
     if not data:
         return False
         
@@ -170,10 +188,11 @@ async def process_hmi_downtime_reason(data):
             return False
 
         record_id_str = data.get("id")
-        machinecode = (data.get("machine") or data.get("device") or "").strip()
-        downtime_code = (data.get("downtimecode") or "").strip()
+        machinecode = str(data.get("machinecode", "")).strip()
+        downtime_code = str(data.get("downtimecode", "")).strip()
         
-        if not record_id_str:
+        if not machinecode or not downtime_code:
+            print(f">>> [PROCESSOR ERROR] Downtime Reason thiếu thông tin: {data}")
             return False
 
         db_master = get_database()
@@ -212,7 +231,8 @@ async def process_hmi_downtime_reason(data):
                 "status": target.get("status"),
                 "downtimecode": downtime_code,
                 "createtime": target.get("start_time"),
-                "endtime": target.get("end_time") if target.get("end_time") else "None"
+                "endtime": target.get("end_time") if target.get("end_time") else "None",
+                "duration": target.get("duration_seconds", 0)
             })
             
             await update_current_production_stats(machinecode or target.get("machinecode"), do_publish=False)
@@ -223,25 +243,185 @@ async def process_hmi_downtime_reason(data):
         return False
 
 async def process_get_defect_master(data):
-    """Xử lý yêu cầu lấy danh sách defect master từ HMI/Client."""
+    """
+    Standard Payload: { "machinecode": "m001" }
+    """
     try:
-        machine = data.get("machine", "Unknown")
-        print(f">>> [PROCESSOR] Nhận yêu cầu defect master cho máy: {machine}")
+        machinecode = str(data.get("machinecode", "Unknown")).strip()
+        print(f">>> [PROCESSOR] Nhận yêu cầu defect master cho máy: {machinecode}")
         
         db_master = get_database()
         # Lấy tất cả defect từ bảng 'defect'
         defects = await db_master["defect"].find({}, {"_id": 0}).to_list(None)
         
-        # Publish kết quả trả về topic mong muốn (thường là cùng topic hoặc topic response)
-        # Theo yêu cầu là publish vào, ta dùng lại topic/get/defectmaster hoặc một topic response
-        # Ở đây ta publish vào chính nó hoặc topic quy định để client nhận
         mqtt_publish("topic/get/defectmaster/res", {
-            "machine": machine,
+            "machinecode": machinecode,
             "defects": defects,
             "timestamp": datetime.utcnow()
         })
-        print(f">>> [DB] Đã gửi {len(defects)} defect records cho {machine}")
+        print(f">>> [DB] Đã gửi {len(defects)} defect records cho {machinecode}")
         return True
     except Exception as e:
         print(f">>> [ERROR] Lỗi lấy defect master: {e}")
         return False
+
+async def process_get_product_master(data):
+    """
+    Standard Payload: { "machinecode": "m001", "getproduct": "changover" }
+    """
+    try:
+        machinecode = str(data.get("machinecode", "Unknown")).strip()
+        req_type = str(data.get("getproduct", "")).lower().strip()
+        print(f">>> [PROCESSOR] Nhận yêu cầu product master cho máy: {machinecode} (type={req_type})")
+        
+        if req_type == "changover":
+            db_master = get_database()
+            # Lấy tất cả product từ bảng 'product'
+            products = await db_master["product"].find({}, {"_id": 0}).to_list(None)
+            
+            # Publish kết quả trả về topic/get/productcode/res khi nhận request là "changover"
+            mqtt_publish("topic/get/productcode/res", products)
+            print(f">>> [DB] Đã gửi {len(products)} product records cho {machinecode}")
+            return True
+        else:
+            print(f">>> [PROCESSOR] Bỏ qua yêu cầu product master không hợp lệ: {req_type}")
+            return False
+            
+    except Exception as e:
+        print(f">>> [ERROR] Lỗi lấy product master: {e}")
+        return False
+
+async def process_get_downtime_request(data):
+    """
+    Standard Payload: { "machinecode": "m002", "getdowntime": "downtime" }
+    """
+    try:
+        from app.engine.logic import get_current_shift
+        machinecode = str(data.get("machinecode", "")).strip()
+        req_type = str(data.get("getdowntime", "")).strip()
+        
+        if not machinecode or req_type != "downtime":
+            return False
+            
+        print(f">>> [PROCESSOR] Nhận yêu cầu fetch downtime cho máy: {machinecode}")
+        
+        # 1. Lấy ca hiện tại
+        shift_info = await get_current_shift()
+        start_shift = shift_info["startshift"]
+        
+        # 2. Truy vấn tất cả downtime của máy trong ca này
+        # (Bao gồm cả active và closed, miễn là bắt đầu trong ca)
+        query = {
+            "machinecode": machinecode,
+            "start_time": {"$gte": start_shift}
+        }
+        
+        downtimes = await db_production["downtime_records"].find(query).sort("start_time", 1).to_list(None)
+        
+        # 3. Publish từng bản ghi xuống topic/downtimeinput
+        for dt in downtimes:
+            mqtt_publish("topic/downtimeinput", {
+                "id": str(dt["_id"]),
+                "machine": machinecode,
+                "status": dt.get("status"),
+                "downtimecode": dt.get("downtime_code") or "default",
+                "createtime": dt.get("start_time"),
+                "endtime": dt.get("end_time") if dt.get("end_time") else "None",
+                "duration": dt.get("duration_seconds", 0)
+            })
+            
+        print(f">>> [DB] Đã gửi {len(downtimes)} bản ghi downtime cho máy {machinecode}")
+        return True
+    except Exception as e:
+        print(f">>> [ERROR] Lỗi process_get_downtime_request: {e}")
+        return False
+
+async def process_get_downtime_master(data):
+    """
+    Standard Payload: { "getdowntime": "downtimcode" }
+    """
+    try:
+        req_type = str(data.get("getdowntime", "")).strip()
+        if req_type != "downtimcode":
+            return False
+
+        print(f">>> [PROCESSOR] Nhận yêu cầu fetch downtime master")
+        from app.storage.db import get_database
+        db_master = get_database()
+        
+        # Lấy tất cả bản ghi từ bảng downtime (Master)
+        downtime_masters = await db_master["downtime"].find({}, {"_id": 0}).to_list(None)
+        
+        # Publish kết quả xuống topic/get/downtimecode/res
+        mqtt_publish("topic/get/downtimecode/res", downtime_masters)
+        print(f">>> [DB] Đã gửi {len(downtime_masters)} bản ghi downtime master")
+        return True
+    except Exception as e:
+        print(f">>> [ERROR] Lỗi process_get_downtime_master: {e}")
+        return False
+
+async def process_update_downtime_reason(data):
+    """
+    Standard Payload: { "_id": "...", "downtimecode": "toilet" }
+    """
+    if not data: return False
+    
+    try:
+        record_id_str = data.get("_id")
+        downtime_code = str(data.get("downtimecode", "")).strip()
+        
+        if not record_id_str or not downtime_code:
+            print(f">>> [PROCESSOR ERROR] Update downtime thiếu thông tin: {data}")
+            return False
+
+        # 1. Tìm thông tin trong master
+        db_master = get_database()
+        master_entry = await db_master["downtime"].find_one({
+            "downtimecode": {"$regex": f"^{downtime_code}$", "$options": "i"}
+        })
+        
+        if master_entry:
+            downtime_code = master_entry.get("downtimecode")
+            reason = master_entry.get("downtimename")
+        else:
+            reason = f"Unknown ({downtime_code})"
+
+        # 2. Update record
+        query = {"_id": ObjectId(record_id_str)}
+        res = await db_production["downtime_records"].update_one(
+            query,
+            {"$set": {
+                "downtime_code": downtime_code,
+                "reason": reason
+            }}
+        )
+        
+        if res.modified_count > 0:
+            target = await db_production["downtime_records"].find_one(query)
+            m_code = target.get("machinecode")
+            print(f">>> [DOWNTIME] Đã cập nhật _id {record_id_str} thành {downtime_code}")
+            
+            # 3. Publish update xuống HMI (optional but good for sync)
+            mqtt_publish("topic/downtimeinput", {
+                "id": str(target["_id"]),
+                "machine": m_code,
+                "status": target.get("status"),
+                "downtimecode": downtime_code,
+                "createtime": target.get("start_time"),
+                "endtime": target.get("end_time") if target.get("end_time") else "None",
+                "duration": target.get("duration_seconds", 0)
+            })
+            
+            if m_code:
+                await update_current_production_stats(m_code, do_publish=False)
+            return True
+        else:
+            print(f">>> [DOWNTIME] Không tìm thấy hoặc không có thay đổi cho _id {record_id_str}")
+            return False
+            
+    except Exception as e:
+        print(f">>> [ERROR] Lỗi process_update_downtime_reason: {e}")
+        return False
+
+
+
